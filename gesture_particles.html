@@ -418,49 +418,22 @@ class HandDetector {
   }
 
   async init() {
-    // 使用 esm.sh CDN（比 jsDelivr +esm 在手机上更可靠）
-    const CDN = 'https://esm.sh/@mediapipe/tasks-vision@0.10.18';
-    const WASM_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm';
+    // 全部从本地加载（GitHub Pages），不依赖外网CDN，国内可访问
+    const mod = await import('./mediapipe/vision_bundle.mjs');
+    const { FilesetResolver, HandLandmarker } = mod;
 
-    let FilesetResolver, HandLandmarker;
-    try {
-      const mod = await import(CDN);
-      FilesetResolver = mod.FilesetResolver;
-      HandLandmarker = mod.HandLandmarker;
-    } catch(e1) {
-      // 回退：尝试 jsDelivr ESM 路径
-      try {
-        const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/+esm');
-        FilesetResolver = mod.FilesetResolver;
-        HandLandmarker = mod.HandLandmarker;
-      } catch(e2) {
-        throw new Error(`JS库加载失败。esm.sh: ${e1.message.slice(0,80)} | jsDelivr: ${e2.message.slice(0,80)}`);
-      }
-    }
+    const vision = await FilesetResolver.forVisionTasks('./mediapipe/wasm/');
 
-    // 加载 WASM
-    let vision;
-    try {
-      vision = await FilesetResolver.forVisionTasks(WASM_BASE);
-    } catch(e) {
-      throw new Error(`WASM加载失败: ${e.message.slice(0,120)}`);
-    }
-
-    // 加载手势模型
-    try {
-      this.landmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task',
-        },
-        runningMode: 'VIDEO',
-        numHands: 2,
-        minHandDetectionConfidence: 0.7,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-    } catch(e) {
-      throw new Error(`手势模型加载失败: ${e.message.slice(0,120)}`);
-    }
+    this.landmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: './hand_landmarker.task',
+      },
+      runningMode: 'VIDEO',
+      numHands: 2,
+      minHandDetectionConfidence: 0.7,
+      minHandPresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    });
   }
 
   detect(videoEl) {
