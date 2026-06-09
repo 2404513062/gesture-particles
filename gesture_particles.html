@@ -197,8 +197,9 @@
 
 <!-- 加载画面 -->
 <div id="loading">
-  <div class="spinner"></div>
-  <p>正在加载手势识别模型…</p>
+  <div class="spinner" id="loading-spinner"></div>
+  <p id="loading-text">正在加载手势识别模型…</p>
+  <button id="loading-retry" style="display:none;margin-top:16px;padding:10px 24px;background:#fff;color:#000;border:none;border-radius:20px;font-size:14px;font-weight:600;cursor:pointer;">🔄 点击重试</button>
 </div>
 
 <!-- Toast -->
@@ -417,22 +418,49 @@ class HandDetector {
   }
 
   async init() {
-    const { FilesetResolver, HandLandmarker } = await import(
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm'
-    );
-    const vision = await FilesetResolver.forVisionTasks(
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm'
-    );
-    this.landmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task',
-      },
-      runningMode: 'VIDEO',
-      numHands: 2,
-      minHandDetectionConfidence: 0.7,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
+    // 使用 esm.sh CDN（比 jsDelivr +esm 在手机上更可靠）
+    const CDN = 'https://esm.sh/@mediapipe/tasks-vision@0.10.18';
+    const WASM_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm';
+
+    let FilesetResolver, HandLandmarker;
+    try {
+      const mod = await import(CDN);
+      FilesetResolver = mod.FilesetResolver;
+      HandLandmarker = mod.HandLandmarker;
+    } catch(e1) {
+      // 回退：尝试 jsDelivr ESM 路径
+      try {
+        const mod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/+esm');
+        FilesetResolver = mod.FilesetResolver;
+        HandLandmarker = mod.HandLandmarker;
+      } catch(e2) {
+        throw new Error(`JS库加载失败。esm.sh: ${e1.message.slice(0,80)} | jsDelivr: ${e2.message.slice(0,80)}`);
+      }
+    }
+
+    // 加载 WASM
+    let vision;
+    try {
+      vision = await FilesetResolver.forVisionTasks(WASM_BASE);
+    } catch(e) {
+      throw new Error(`WASM加载失败: ${e.message.slice(0,120)}`);
+    }
+
+    // 加载手势模型
+    try {
+      this.landmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task',
+        },
+        runningMode: 'VIDEO',
+        numHands: 2,
+        minHandDetectionConfidence: 0.7,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+    } catch(e) {
+      throw new Error(`手势模型加载失败: ${e.message.slice(0,120)}`);
+    }
   }
 
   detect(videoEl) {
@@ -953,35 +981,65 @@ async function startCamera() {
   }
 }
 
-async function init() {
+async function runInit() {
   resize();
-  window.addEventListener('resize', resize);
-  window.addEventListener('orientationchange', () => setTimeout(resize, 300));
-
-  // 初始化粒子系统
   particleSystem = new ParticleSystem(canvasW, canvasH);
   effectEngine = new EffectEngine(particleSystem, canvasW, canvasH);
 
-  // 加载手势检测
   detector = new HandDetector();
-  try {
-    await detector.init();
-  } catch(e) {
-    console.error('模型加载失败:', e);
-    loadingEl.innerHTML = `<p style="color:#ff6b6b">❌ 模型加载失败</p><p style="font-size:13px;margin-top:8px;opacity:0.7">请检查网络连接后刷新</p>`;
-    return;
-  }
+  await detector.init();
 
-  // 启动摄像头
   await startCamera();
 
-  // 隐藏加载画面
   loadingEl.classList.add('hidden');
 
   // 默认选中自动按钮
   gBtns[0].classList.add('active');
 
   requestAnimationFrame(loop);
+}
+
+const loadingSpinner = $('#loading-spinner');
+const loadingText = $('#loading-text');
+const loadingRetry = $('#loading-retry');
+
+function showLoadError(title, detail) {
+  loadingSpinner.style.display = 'none';
+  loadingText.innerHTML = `<span style="color:#ff6b6b">${title}</span>`;
+  if (detail) {
+    const detailEl = document.createElement('p');
+    detailEl.style.cssText = 'font-size:11px;margin-top:8px;opacity:0.6;max-width:90vw;word-break:break-all;text-align:center;';
+    detailEl.textContent = detail;
+    loadingText.appendChild(detailEl);
+  }
+  loadingRetry.style.display = 'block';
+}
+
+loadingRetry.addEventListener('click', () => {
+  loadingSpinner.style.display = 'block';
+  loadingText.innerHTML = '正在加载手势识别模型…';
+  loadingRetry.style.display = 'none';
+  setTimeout(() => init(), 300);
+});
+
+async function init() {
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', () => setTimeout(resize, 300));
+
+  try {
+    await runInit();
+  } catch(e) {
+    console.error('初始化失败:', e);
+    const msg = e.message || String(e);
+    if (msg.includes('JS库加载失败') || msg.includes('WASM加载失败') || msg.includes('手势模型加载失败')) {
+      showLoadError('❌ ' + msg.split(':')[0], msg.split(':').slice(1).join(':'));
+    } else if (msg.includes('摄像头') || msg.includes('Permission') || msg.includes('NotAllowed')) {
+      showLoadError('❌ 无法打开摄像头', '请允许摄像头权限后刷新页面');
+    } else {
+      showLoadError('❌ 加载失败', msg.slice(0, 200));
+    }
+  }
 }
 
 function loop(timestamp) {
