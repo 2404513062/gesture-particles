@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>手势粒子交互系统</title>
+<style>
+  :root {
+    --color-palm: #FF69B4;
+    --color-fist: #FF6B35;
+    --color-peace: #4ECDC4;
+    --color-point: #FFD700;
+    --color-rock: #FF3860;
+    --color-thumbs: #FFE66D;
+    --color-ok: #A855F7;
+    --glass-bg: rgba(0,0,0,0.45);
+    --glass-border: rgba(255,255,255,0.12);
+    --glass-blur: blur(16px);
+    --font-main: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#000; font-family:var(--font-main); touch-action:manipulation; -webkit-tap-highlight-color:transparent; -webkit-user-select:none; user-select:none; }
+
+  /* ── 摄像头 & 粒子画布 ── */
+  #video-wrap {
+    position:fixed; inset:0; overflow:hidden;
+    background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0f 100%);
+  }
+  #video {
+    position:absolute; top:0; left:0;
+    width:100%; height:100%; object-fit:cover;
+    transform: scaleX(-1); /* 镜像 */
+    opacity:0; /* 隐藏视频元素，由 Canvas 绘制画面 */
+  }
+  #particle-canvas {
+    position:absolute; top:0; left:0;
+    width:100%; height:100%;
+    pointer-events:none;
+  }
+
+  /* ── 加载画面 ── */
+  #loading {
+    position:fixed; inset:0; z-index:1000;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0f 100%);
+    transition: opacity 0.6s, visibility 0.6s;
+  }
+  #loading.hidden { opacity:0; visibility:hidden; pointer-events:none; }
+  #loading .spinner {
+    width:48px; height:48px;
+    border:3px solid rgba(255,255,255,0.15);
+    border-top-color:#fff;
+    border-radius:50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #loading p { margin-top:20px; color:rgba(255,255,255,0.7); font-size:15px; letter-spacing:0.5px; }
+
+  /* ── 顶部手势指示器 ── */
+  #gesture-indicator {
+    position:fixed; top:max(16px, env(safe-area-inset-top, 16px)); left:50%; transform:translateX(-50%);
+    z-index:100; display:flex; flex-direction:column; align-items:center; gap:4px;
+    transition: transform 0.35s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  #gesture-indicator.bounce { transform:translateX(-50%) scale(1.25); }
+  #gesture-icon {
+    font-size:clamp(48px, 10vw, 72px);
+    filter:drop-shadow(0 0 20px rgba(255,255,255,0.4));
+    line-height:1; transition:transform 0.3s;
+  }
+  #gesture-glow {
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:80px; height:80px; border-radius:50%;
+    filter:blur(40px); opacity:0.5; z-index:-1;
+    transition: background 0.5s;
+  }
+  #gesture-name {
+    background:var(--glass-bg); backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur);
+    border:1px solid var(--glass-border); border-radius:20px;
+    padding:6px 18px; color:#fff; font-size:14px; font-weight:600; letter-spacing:0.5px;
+    white-space:nowrap; text-shadow:0 1px 2px rgba(0,0,0,0.5);
+  }
+
+  /* ── 状态信息条 ── */
+  #status-bar {
+    position:fixed; top:max(16px, env(safe-area-inset-top, 16px)); right:12px;
+    z-index:100; display:flex; gap:10px; align-items:center;
+  }
+  .status-dot {
+    display:flex; align-items:center; gap:5px;
+    background:var(--glass-bg); backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur);
+    border:1px solid var(--glass-border); border-radius:16px;
+    padding:6px 12px; color:#fff; font-size:11px; font-weight:500;
+  }
+  .status-dot .dot-icon { font-size:13px; }
+  #particle-dots { display:flex; gap:3px; align-items:center; }
+  #particle-dots span {
+    width:5px; height:5px; border-radius:50%; background:rgba(255,255,255,0.25);
+    transition: background 0.4s, box-shadow 0.4s;
+  }
+  #particle-dots span.full { background:#fff; box-shadow:0 0 6px #fff; }
+
+  /* ── 底部控制栏 ── */
+  #controls {
+    position:fixed; bottom:max(12px, env(safe-area-inset-bottom, 12px)); left:50%; transform:translateX(-50%);
+    z-index:100; display:flex; flex-direction:column; gap:10px; align-items:center;
+    width:min(95vw, 500px);
+  }
+  #gesture-buttons {
+    display:flex; gap:8px; justify-content:center; flex-wrap:wrap;
+    background:var(--glass-bg); backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur);
+    border:1px solid var(--glass-border); border-radius:24px;
+    padding:8px 10px;
+  }
+  .g-btn {
+    width:clamp(38px, 10vw, 48px); height:clamp(38px, 10vw, 48px);
+    border-radius:50%; border:2px solid transparent;
+    background:rgba(255,255,255,0.06);
+    font-size:clamp(18px, 5vw, 24px);
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer; transition:all 0.25s;
+    position:relative; -webkit-tap-highlight-color:transparent;
+  }
+  .g-btn:active { transform:scale(0.88); transition:transform 0.1s; }
+  .g-btn.active {
+    border-color:#fff;
+    background:rgba(255,255,255,0.18);
+    box-shadow:0 0 18px rgba(255,255,255,0.25);
+    transform:scale(1.08);
+  }
+  .g-btn .tooltip {
+    position:absolute; bottom:-22px; left:50%; transform:translateX(-50%);
+    font-size:10px; color:rgba(255,255,255,0.7); white-space:nowrap;
+    pointer-events:none; opacity:0; transition:opacity 0.2s;
+  }
+  .g-btn.active .tooltip { opacity:1; }
+
+  #action-buttons {
+    display:flex; gap:8px; justify-content:center;
+  }
+  .a-btn {
+    display:flex; align-items:center; gap:6px;
+    background:var(--glass-bg); backdrop-filter:var(--glass-blur); -webkit-backdrop-filter:var(--glass-blur);
+    border:1px solid var(--glass-border); border-radius:20px;
+    padding:8px 16px; color:#fff; font-size:12px; font-weight:500;
+    cursor:pointer; transition:all 0.2s; -webkit-tap-highlight-color:transparent;
+  }
+  .a-btn:active { transform:scale(0.93); background:rgba(255,255,255,0.18); }
+  .a-btn .a-icon { font-size:16px; }
+
+  /* ── Toast 提示 ── */
+  #toast {
+    position:fixed; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.8);
+    background:rgba(0,0,0,0.85); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+    color:#fff; padding:12px 24px; border-radius:24px; font-size:15px; font-weight:600;
+    z-index:200; pointer-events:none; opacity:0;
+    transition:all 0.35s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  #toast.show { opacity:1; transform:translate(-50%,-50%) scale(1); }
+
+  /* ── 微信提示条 ── */
+  #wechat-tip {
+    position:fixed; top:0; left:0; right:0; z-index:300;
+    background:#FF6B35; color:#fff; padding:10px 16px; font-size:13px; text-align:center;
+    display:none; font-weight:600; letter-spacing:0.3px;
+  }
+  #wechat-tip.show { display:block; }
+
+  /* ── 横屏适配 ── */
+  @media (orientation:landscape) and (max-height:500px) {
+    #controls { bottom:6px; gap:4px; }
+    #gesture-buttons { padding:5px 8px; gap:4px; }
+    .g-btn { width:32px; height:32px; font-size:16px; }
+    .a-btn { padding:5px 10px; font-size:10px; }
+    #gesture-indicator { top:4px; flex-direction:row; gap:8px; }
+    #gesture-icon { font-size:32px; }
+    #gesture-name { font-size:11px; padding:3px 10px; }
+    #status-bar { top:4px; right:6px; gap:4px; }
+    .status-dot { padding:3px 8px; font-size:10px; }
+  }
+
+  /* ── 大屏优化 ── */
+  @media (min-width:768px) {
+    #controls { width:520px; }
+    .g-btn { width:52px; height:52px; }
+    #gesture-icon { font-size:80px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 微信提示 -->
+<div id="wechat-tip">⚠️ 请点击右上角 → "在浏览器中打开"</div>
+
+<!-- 加载画面 -->
+<div id="loading">
+  <div class="spinner"></div>
+  <p>正在加载手势识别模型…</p>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- 视频 & 画布 -->
+<div id="video-wrap">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="particle-canvas"></canvas>
+</div>
+
+<!-- 顶部手势指示器 -->
+<div id="gesture-indicator">
+  <div id="gesture-glow"></div>
+  <div id="gesture-icon">🖐️</div>
+  <div id="gesture-name">等待手势…</div>
+</div>
+
+<!-- 状态栏 -->
+<div id="status-bar">
+  <div class="status-dot">
+    <span class="dot-icon">⚡</span>
+    <span id="fps-text">0</span>
+    <span style="opacity:0.6">fps</span>
+  </div>
+  <div class="status-dot">
+    <span class="dot-icon">✨</span>
+    <span id="count-text">0</span>
+  </div>
+  <div class="status-dot" id="particle-dots"></div>
+</div>
+
+<!-- 底部控制 -->
+<div id="controls">
+  <div id="gesture-buttons">
+    <button class="g-btn" data-gesture="auto" title="自动识别">
+      🤖<span class="tooltip">自动</span>
+    </button>
+    <button class="g-btn" data-gesture="palm">
+      🖐️<span class="tooltip">花朵</span>
+    </button>
+    <button class="g-btn" data-gesture="fist">
+      ✊<span class="tooltip">火焰</span>
+    </button>
+    <button class="g-btn" data-gesture="peace">
+      ✌️<span class="tooltip">水波</span>
+    </button>
+    <button class="g-btn" data-gesture="point">
+      ☝️<span class="tooltip">星光</span>
+    </button>
+    <button class="g-btn" data-gesture="rock">
+      🤟<span class="tooltip">爱心</span>
+    </button>
+    <button class="g-btn" data-gesture="thumbs">
+      👍<span class="tooltip">烟花</span>
+    </button>
+    <button class="g-btn" data-gesture="ok">
+      👌<span class="tooltip">银河</span>
+    </button>
+  </div>
+  <div id="action-buttons">
+    <button class="a-btn" id="btn-camera">
+      <span class="a-icon">📷</span> 翻转
+    </button>
+    <button class="a-btn" id="btn-screenshot">
+      <span class="a-icon">📸</span> 截图
+    </button>
+    <button class="a-btn" id="btn-clear">
+      <span class="a-icon">🧹</span> 清除
+    </button>
+  </div>
+</div>
+
+<script type="module">
+// ═══════════════════════════════════════════════════════════
+//  手势粒子交互系统 — 移动端网页版
+//  Gesture Particle System — Mobile Web
+// ═══════════════════════════════════════════════════════════
+
+// 检测微信内置浏览器
+if (/MicroMessenger/i.test(navigator.userAgent)) {
+  document.getElementById('wechat-tip').classList.add('show');
+}
+
+// 提示：需要 HTTPS/localhost 才能使用摄像头
+if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+  console.warn('⚠️ 摄像头需要 HTTPS 或 localhost，当前协议:', location.protocol);
+}
+
+// ── 配置 ──
+const CONFIG = {
+  MAX_PARTICLES: 180,
+  OVERLAY_DECAY: 0.88,
+  DETECT_EVERY: 3,
+  GESTURE_CONFIRM: 3,
+};
+
+// ── 手势类型 ──
+const GestureType = Object.freeze({
+  OPEN_PALM: 'open_palm',
+  FIST: 'fist',
+  PEACE: 'peace',
+  POINT: 'point',
+  ROCK: 'rock',
+  THUMBS_UP: 'thumbs_up',
+  OK_SIGN: 'ok_sign',
+  NO_HAND: 'no_hand',
+  UNKNOWN: 'unknown',
+});
+
+// ── 手势元数据 ──
+const GESTURE_META = {
+  [GestureType.OPEN_PALM]: { icon:'🖐️', name:'花朵绽放', color:'#FF69B4', effect:'flower' },
+  [GestureType.FIST]:      { icon:'✊', name:'火焰爆发', color:'#FF6B35', effect:'fire' },
+  [GestureType.PEACE]:     { icon:'✌️', name:'水波涟漪', color:'#4ECDC4', effect:'water' },
+  [GestureType.POINT]:     { icon:'☝️', name:'星光轨迹', color:'#FFD700', effect:'star' },
+  [GestureType.ROCK]:      { icon:'🤟', name:'爱心粒子', color:'#FF3860', effect:'heart' },
+  [GestureType.THUMBS_UP]: { icon:'👍', name:'烟花效果', color:'#FFE66D', effect:'firework' },
+  [GestureType.OK_SIGN]:   { icon:'👌', name:'银河漩涡', color:'#A855F7', effect:'galaxy' },
+  [GestureType.NO_HAND]:   { icon:'👋', name:'等待手势…', color:'#888888', effect:'ambient' },
+  [GestureType.UNKNOWN]:   { icon:'❓', name:'未知手势', color:'#888888', effect:'ambient' },
+};
+
+const GESTURE_ORDER = ['auto','palm','fist','peace','point','rock','thumbs','ok'];
+
+// ── DOM 引用 ──
+const $ = s => document.querySelector(s);
+const video = $('#video');
+const canvas = $('#particle-canvas');
+const ctx = canvas.getContext('2d');
+const loadingEl = $('#loading');
+const gestureIcon = $('#gesture-icon');
+const gestureName = $('#gesture-name');
+const gestureGlow = $('#gesture-glow');
+const gestureIndicator = $('#gesture-indicator');
+const fpsText = $('#fps-text');
+const countText = $('#count-text');
+const particleDots = $('#particle-dots');
+const toast = $('#toast');
+
+// 粒子点指示器
+for (let i=0; i<10; i++) {
+  const dot = document.createElement('span');
+  particleDots.appendChild(dot);
+}
+
+// ── Toast ──
+let toastTimer;
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 1500);
+}
+
+// ── 手势按钮事件 ──
+let manualGesture = null; // null = 自动模式
+const gBtns = document.querySelectorAll('.g-btn');
+gBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    const g = btn.dataset.gesture;
+    gBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    if (g === 'auto') {
+      manualGesture = null;
+      showToast('🤖 自动识别模式');
+    } else {
+      const map = { palm:GestureType.OPEN_PALM, fist:GestureType.FIST, peace:GestureType.PEACE,
+                    point:GestureType.POINT, rock:GestureType.ROCK, thumbs:GestureType.THUMBS_UP, ok:GestureType.OK_SIGN };
+      manualGesture = map[g];
+      showToast(`${GESTURE_META[manualGesture].icon} ${GESTURE_META[manualGesture].name}`);
+    }
+  });
+});
+
+// ── 动作按钮 ──
+let facingMode = 'user';
+$('#btn-camera').addEventListener('click', () => {
+  facingMode = facingMode === 'user' ? 'environment' : 'user';
+  startCamera();
+  showToast(facingMode === 'user' ? '🤳 前置摄像头' : '📷 后置摄像头');
+});
+$('#btn-screenshot').addEventListener('click', () => {
+  // 截图：合成视频 + 粒子
+  const tmpCanvas = document.createElement('canvas');
+  tmpCanvas.width = canvas.width;
+  tmpCanvas.height = canvas.height;
+  const tmpCtx = tmpCanvas.getContext('2d');
+  tmpCtx.save();
+  tmpCtx.scale(-1,1);
+  tmpCtx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+  tmpCtx.restore();
+  tmpCtx.drawImage(canvas, 0, 0);
+  tmpCanvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `gesture_${Date.now()}.png`;
+    a.click(); URL.revokeObjectURL(url);
+  });
+  showToast('📸 截图已保存！');
+});
+$('#btn-clear').addEventListener('click', () => {
+  particleSystem.clear();
+  showToast('🧹 已清除');
+});
+
+// ═══════════════════════════════════════════════════════════
+//  手势检测器
+// ═══════════════════════════════════════════════════════════
+class HandDetector {
+  constructor() {
+    this.landmarker = null;
+    this.gestureHistory = [];
+    this.currentGesture = GestureType.NO_HAND;
+    this.lastTimestamp = 0;
+  }
+
+  async init() {
+    const { FilesetResolver, HandLandmarker } = await import(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm'
+    );
+    const vision = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm'
+    );
+    this.landmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task',
+      },
+      runningMode: 'VIDEO',
+      numHands: 2,
+      minHandDetectionConfidence: 0.7,
+      minHandPresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    });
+  }
+
+  detect(videoEl) {
+    const now = performance.now();
+    if (!this.landmarker) return { gesture: GestureType.NO_HAND, handData: null };
+
+    let results;
+    try {
+      results = this.landmarker.detectForVideo(videoEl, Math.floor(now));
+    } catch(e) {
+      return { gesture: GestureType.NO_HAND, handData: null };
+    }
+
+    if (!results.handLandmarks || results.handLandmarks.length === 0) {
+      this._updateHistory(GestureType.NO_HAND);
+      return { gesture: this._stable(), handData: null };
+    }
+
+    const lm = results.handLandmarks[0];
+    const handedness = results.handedness?.[0]?.[0]?.categoryName || 'Right';
+    const gesture = this._classify(lm, handedness);
+    this._updateHistory(gesture);
+
+    const handData = this._extractData(lm, handedness);
+    handData.landmarks = lm;
+    handData.result = results;
+    return { gesture: this._stable(), handData };
+  }
+
+  _classify(lm, handedness) {
+    // 拇指伸展判断
+    const thumbTip = lm[4], thumbIp = lm[3], indexMcp = lm[5];
+    const tipDist = Math.hypot(thumbTip.x - indexMcp.x, thumbTip.y - indexMcp.y);
+    const ipDist = Math.hypot(thumbIp.x - indexMcp.x, thumbIp.y - indexMcp.y);
+    const thumbExt = tipDist > ipDist * 1.3;
+
+    // 四指伸展判断
+    const tips = [8,12,16,20], pips = [6,10,14,18];
+    const fingers = [thumbExt];
+    for (let i=0; i<4; i++) {
+      fingers.push(lm[tips[i]].y < lm[pips[i]].y - 0.02);
+    }
+
+    const [t,i,m,r,p] = fingers;
+
+    // OK手势
+    const okDist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+    if (okDist < 0.05 && m && r && p) return GestureType.OK_SIGN;
+
+    const n = fingers.filter(Boolean).length;
+    if (n === 5) return GestureType.OPEN_PALM;
+    if (n === 0) return GestureType.FIST;
+    if (i && m && !r && !p && !t) return GestureType.PEACE;
+    if (i && !m && !r && !p && !t) return GestureType.POINT;
+    if (t && i && !m && !r && p) return GestureType.ROCK;
+    if (t && !i && !m && !r && !p) return GestureType.THUMBS_UP;
+
+    return GestureType.UNKNOWN;
+  }
+
+  _extractData(lm, handedness) {
+    const w = canvas.width, h = canvas.height;
+    return {
+      palmCenter: {
+        x: (lm[0].x + lm[9].x) / 2 * w,
+        y: (lm[0].y + lm[9].y) / 2 * h,
+      },
+      fingertips: {
+        thumb:  { x: lm[4].x * w,  y: lm[4].y * h },
+        index:  { x: lm[8].x * w,  y: lm[8].y * h },
+        middle: { x: lm[12].x * w, y: lm[12].y * h },
+        ring:   { x: lm[16].x * w, y: lm[16].y * h },
+        pinky:  { x: lm[20].x * w, y: lm[20].y * h },
+      },
+      handedness,
+    };
+  }
+
+  _updateHistory(g) {
+    this.gestureHistory.push(g);
+    if (this.gestureHistory.length > CONFIG.GESTURE_CONFIRM) this.gestureHistory.shift();
+  }
+
+  _stable() {
+    if (this.gestureHistory.length < CONFIG.GESTURE_CONFIRM) return GestureType.NO_HAND;
+    const freq = {};
+    this.gestureHistory.forEach(g => freq[g] = (freq[g]||0)+1);
+    const top = Object.entries(freq).sort((a,b)=>b[1]-a[1])[0];
+    if (top[1] >= Math.floor(CONFIG.GESTURE_CONFIRM/2)+1) {
+      this.currentGesture = top[0];
+    } else {
+      this.currentGesture = GestureType.UNKNOWN;
+    }
+    return this.currentGesture;
+  }
+
+  close() { if (this.landmarker) this.landmarker.close(); }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  粒子 & 粒子系统
+// ═══════════════════════════════════════════════════════════
+class Particle {
+  constructor(x,y,vx,vy,life,color,size) {
+    this.x = x; this.y = y;
+    this.vx = vx; this.vy = vy;
+    this.life = life; this.maxLife = life;
+    this.color = color; // [r,g,b]
+    this.size = size; this.maxSize = size;
+    this.effectData = {};
+  }
+  get alive() { return this.life > 0; }
+  alpha() { return Math.max(0, this.life / this.maxLife); }
+}
+
+class ParticleSystem {
+  constructor(w, h) {
+    this.w = w; this.h = h;
+    this.particles = [];
+    this.overlay = document.createElement('canvas');
+    this.overlay.width = w; this.overlay.height = h;
+    this.ovCtx = this.overlay.getContext('2d');
+  }
+
+  get count() { return this.particles.length; }
+
+  spawn(x,y,vx,vy,life,color,size,effectData) {
+    if (this.particles.length >= CONFIG.MAX_PARTICLES) this.particles.shift();
+    const p = new Particle(x,y,vx,vy,life,color,size);
+    if (effectData) p.effectData = effectData;
+    this.particles.push(p);
+  }
+
+  spawnBurst(cx,cy,count,speedRange,lifeRange,colorGen,sizeRange,angleRange) {
+    const [minSpd,maxSpd] = speedRange;
+    const [minLife,maxLife] = lifeRange;
+    const [minSz,maxSz] = sizeRange;
+    const [a0,a1] = angleRange || [0, Math.PI*2];
+    for (let i=0; i<count; i++) {
+      const angle = a0 + Math.random()*(a1-a0);
+      const speed = minSpd + Math.random()*(maxSpd-minSpd);
+      const vx = Math.cos(angle)*speed, vy = Math.sin(angle)*speed;
+      const life = minLife + Math.random()*(maxLife-minLife);
+      const color = colorGen();
+      const size = minSz + Math.random()*(maxSz-minSz);
+      this.spawn(cx,cy,vx,vy,life,color,size);
+    }
+  }
+
+  update(dt) {
+    const alive = [];
+    for (const p of this.particles) {
+      if (!p.alive) continue;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+      if (p.x < -60 || p.x > this.w+60 || p.y < -60 || p.y > this.h+60) { p.life = 0; continue; }
+      alive.push(p);
+    }
+    this.particles = alive;
+  }
+
+  renderOverlay() {
+    // 拖尾衰减
+    const ovCtx = this.ovCtx;
+    ovCtx.globalCompositeOperation = 'destination-out';
+    ovCtx.fillStyle = `rgba(0,0,0,${1 - CONFIG.OVERLAY_DECAY})`;
+    ovCtx.fillRect(0,0,this.w,this.h);
+    ovCtx.globalCompositeOperation = 'lighter'; // 叠加发光
+
+    for (const p of this.particles) {
+      const alpha = p.alpha();
+      const size = Math.max(1, p.size * (0.3 + 0.7*alpha));
+      const [r,g,b] = p.color;
+      const px = p.x, py = p.y;
+
+      // 光晕
+      if (size > 2) {
+        ovCtx.beginPath();
+        ovCtx.arc(px,py, size+3, 0, Math.PI*2);
+        ovCtx.fillStyle = `rgba(${r},${g},${b},${0.25*alpha})`;
+        ovCtx.fill();
+      }
+      // 主体
+      ovCtx.beginPath();
+      ovCtx.arc(px,py, size, 0, Math.PI*2);
+      ovCtx.fillStyle = `rgba(${r},${g},${b},${0.4+0.6*alpha})`;
+      ovCtx.fill();
+      // 核心
+      if (size > 3) {
+        ovCtx.beginPath();
+        ovCtx.arc(px,py, size*0.45, 0, Math.PI*2);
+        ovCtx.fillStyle = `rgba(${Math.min(255,r*1.5)|0},${Math.min(255,g*1.5)|0},${Math.min(255,b*1.5)|0},${alpha})`;
+        ovCtx.fill();
+      }
+    }
+    return this.overlay;
+  }
+
+  resize(w,h) {
+    this.w = w; this.h = h;
+    this.overlay.width = w; this.overlay.height = h;
+  }
+
+  clear() {
+    this.particles.length = 0;
+    this.ovCtx.clearRect(0,0,this.w,this.h);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  效果引擎
+// ═══════════════════════════════════════════════════════════
+class EffectEngine {
+  constructor(ps, w, h) {
+    this.ps = ps; this.w = w; this.h = h; this.time = 0;
+    this._flowerAngle = 0; this._flowerTimer = 0;
+    this._rippleTimer = 0;
+    this._heartTimer = 0;
+    this._fireworkTimer = 0;
+    this._galaxyAngle = 0;
+  }
+
+  updateTime(dt) { this.time += dt; }
+
+  // ── 颜色生成器 ──
+  static flowerColor = () => [200+Math.random()*55|0, 50+Math.random()*130|0, 180+Math.random()*75|0];
+  static fireColor = () => {
+    const t = Math.random();
+    if (t<0.3) return [255, 200+Math.random()*55|0, 0];
+    if (t<0.7) return [255, 100+Math.random()*80|0, 0];
+    return [255, Math.random()*60|0, Math.random()*30|0];
+  };
+  static waterColor = () => [180+Math.random()*75|0, 150+Math.random()*105|0, 50+Math.random()*100|0];
+  static starColor = () => {
+    const t = Math.random();
+    if (t<0.5) return [255, 210+Math.random()*45|0, 200+Math.random()*55|0];
+    if (t<0.8) return [255, 200+Math.random()*55|0, 0];
+    return [255, 230+Math.random()*25|0, 150+Math.random()*105|0];
+  };
+  static heartColor = () => [220+Math.random()*35|0, 20+Math.random()*80|0, 50+Math.random()*100|0];
+  static galaxyColor = () => {
+    const t = Math.random();
+    if (t<0.33) return [180+Math.random()*75|0, Math.random()*60|0, 180+Math.random()*75|0];
+    if (t<0.66) return [200+Math.random()*55|0, 50+Math.random()*100|0, 150+Math.random()*105|0];
+    return [150+Math.random()*50|0, 100+Math.random()*100|0, 200+Math.random()*55|0];
+  };
+  static fireworkColor = () => {
+    const cols = [[255,255,0],[255,165,0],[255,0,0],[255,0,255],[0,255,255],[0,255,0],[0,0,255]];
+    const [r,g,b] = cols[Math.random()*cols.length|0];
+    return [Math.min(255,Math.max(0,r+(Math.random()-0.5)*60))|0,
+            Math.min(255,Math.max(0,g+(Math.random()-0.5)*60))|0,
+            Math.min(255,Math.max(0,b+(Math.random()-0.5)*60))|0];
+  };
+
+  // ── 花朵绽放 ──
+  effectFlower(handData, dt) {
+    const {x:cx, y:cy} = handData.palmCenter;
+    this._flowerTimer += dt;
+    this._flowerAngle += dt * 0.5;
+    const petals = 6;
+    for (let petal=0; petal<petals; petal++) {
+      const baseAngle = this._flowerAngle + (Math.PI*2/petals)*petal;
+      for (let i=0; i<2; i++) {
+        const angle = baseAngle + (Math.random()-0.5)*0.6;
+        const dist = 30 + Math.random()*90;
+        const wave = Math.sin(dist*0.05 + this._flowerAngle*3)*18;
+        const px = cx + Math.cos(angle)*dist + Math.cos(angle+Math.PI/2)*wave;
+        const py = cy + Math.sin(angle)*dist + Math.sin(angle+Math.PI/2)*wave;
+        const speed = 40+Math.random()*60;
+        this.ps.spawn(px, py,
+          Math.cos(angle)*speed + (Math.random()-0.5)*40,
+          Math.sin(angle)*speed + (Math.random()-0.5)*40,
+          1.5+Math.random()*1.5, EffectEngine.flowerColor(), 4+Math.random()*8,
+          {type:'flower'});
+      }
+    }
+    if (this._flowerTimer > 0.3) {
+      this._flowerTimer = 0;
+      for (let i=0; i<5; i++) {
+        const a = Math.random()*Math.PI*2;
+        this.ps.spawn(cx, cy, Math.cos(a)*20, Math.sin(a)*20, 1+Math.random(),
+          [255, 200+Math.random()*55|0, 0], 2+Math.random()*3);
+      }
+    }
+  }
+
+  // ── 火焰爆发 ──
+  effectFire(handData, dt) {
+    const {x:cx, y:cy} = handData.palmCenter;
+    this.ps.spawnBurst(cx,cy, 7, [80,250], [0.8,2.0], EffectEngine.fireColor, [5,15]);
+    this.ps.spawnBurst(cx,cy-20, 4, [20,80], [1.0,2.5], EffectEngine.fireColor, [2,6], [-Math.PI*0.7, -Math.PI*0.3]);
+    for (let i=0; i<2; i++) {
+      const a = -Math.PI*0.5 + (Math.random()-0.5)*0.2;
+      const s = 10+Math.random()*30;
+      const gray = 60+Math.random()*60|0;
+      this.ps.spawn(cx+(Math.random()-0.5)*40, cy,
+        Math.cos(a)*s, Math.sin(a)*s, 1.5+Math.random()*1.5,
+        [gray,gray,gray], 8+Math.random()*12);
+    }
+  }
+
+  // ── 水波涟漪 ──
+  effectWater(handData, dt) {
+    this._rippleTimer += dt;
+    for (const key of ['index','middle']) {
+      const {x:fx, y:fy} = handData.fingertips[key];
+      for (let i=0; i<3; i++) {
+        const a = Math.random()*Math.PI*2;
+        const s = 60+Math.random()*60;
+        this.ps.spawn(fx, fy, Math.cos(a)*s, Math.sin(a)*s,
+          1.5+Math.random()*2, EffectEngine.waterColor(), 2+Math.random()*3,
+          {type:'ripple'});
+      }
+    }
+    if (this._rippleTimer > 0.5) {
+      this._rippleTimer = 0;
+      for (const key of ['index','middle']) {
+        const {x:fx, y:fy} = handData.fingertips[key];
+        this.ps.spawnBurst(fx,fy, 12, [30,100], [2.0,4.0], EffectEngine.waterColor, [2,6]);
+      }
+    }
+  }
+
+  // ── 星光轨迹 ──
+  effectStar(handData, dt) {
+    const {x:fx, y:fy} = handData.fingertips.index;
+    for (let i=0; i<4; i++) {
+      this.ps.spawn(fx+(Math.random()-0.5)*30, fy+(Math.random()-0.5)*30,
+        (Math.random()-0.5)*60, (Math.random()-0.5)*60,
+        0.3+Math.random()*0.9, EffectEngine.starColor(), 1+Math.random()*3);
+    }
+    if (Math.random()<0.3) {
+      this.ps.spawn(fx, fy, (Math.random()-0.5)*30, (Math.random()-0.5)*30,
+        0.5+Math.random(), [255,255,255], 3+Math.random()*5);
+    }
+  }
+
+  // ── 爱心粒子 ──
+  effectHeart(handData, dt) {
+    const {x:cx, y:cy} = handData.palmCenter;
+    this._heartTimer += dt;
+    for (let i=0; i<3; i++) {
+      const t = Math.random()*Math.PI*2;
+      const scale = 3+Math.random()*5;
+      const hx = cx + scale*16*Math.sin(t)**3;
+      const hy = cy - scale*(13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t));
+      const dx = hx-cx, dy = hy-cy;
+      const dist = Math.hypot(dx,dy)+0.01;
+      const speed = 20+Math.random()*40;
+      this.ps.spawn(hx, hy, (dx/dist)*speed+(Math.random()-0.5)*30, (dy/dist)*speed+(Math.random()-0.5)*30,
+        1.5+Math.random()*1.5, EffectEngine.heartColor(), 3+Math.random()*7, {type:'heart'});
+    }
+    if (this._heartTimer > 1.0) {
+      this._heartTimer = 0;
+      for (let i=0; i<25; i++) {
+        const t = Math.random()*Math.PI*2;
+        const scale = 4+Math.random()*6;
+        const hx = cx + scale*16*Math.sin(t)**3;
+        const hy = cy - scale*(13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t));
+        const dx = hx-cx, dy = hy-cy;
+        const dist = Math.hypot(dx,dy)+0.01;
+        const speed = 30+Math.random()*60;
+        this.ps.spawn(hx, hy, (dx/dist)*speed, (dy/dist)*speed,
+          1+Math.random()*1.5, EffectEngine.heartColor(), 2+Math.random()*6);
+      }
+    }
+  }
+
+  // ── 烟花 ──
+  effectFirework(handData, dt) {
+    const {x:tx, y:ty} = handData.fingertips.thumb;
+    const {x:cx, y:cy} = handData.palmCenter;
+    this._fireworkTimer += dt;
+    for (let i=0; i<2; i++) {
+      this.ps.spawn(tx+(Math.random()-0.5)*20, ty,
+        (Math.random()-0.5)*60, -200-Math.random()*100,
+        0.8+Math.random()*0.7, [255,255,0], 3+Math.random()*3,
+        {type:'fireworkRise', explodeY: ty - 100 - Math.random()*150});
+    }
+    if (this._fireworkTimer > 2.0) {
+      this._fireworkTimer = 0;
+      const bx = cx+(Math.random()-0.5)*160;
+      const by = cy-100-Math.random()*150;
+      this.ps.spawnBurst(bx,by, 50, [50,300], [1.0,3.0], EffectEngine.fireworkColor, [2,8]);
+      this.ps.spawnBurst(bx,by, 15, [20,100], [0.5,1.5], ()=>[255,255,255], [1,4]);
+    }
+    // 检查上升粒子爆炸
+    for (const p of this.ps.particles) {
+      if (p.effectData.type==='fireworkRise' && p.y <= p.effectData.explodeY && p.life>0) {
+        this.ps.spawnBurst(p.x,p.y, 12, [30,150], [0.5,1.5], EffectEngine.fireworkColor, [2,6]);
+        p.life = 0;
+      }
+    }
+  }
+
+  // ── 银河漩涡 ──
+  effectGalaxy(handData, dt) {
+    const {x:cx, y:cy} = handData.palmCenter;
+    this._galaxyAngle += dt*2;
+    const arms = 3;
+    for (let arm=0; arm<arms; arm++) {
+      const baseAngle = this._galaxyAngle + (Math.PI*2/arms)*arm;
+      for (let i=0; i<3; i++) {
+        const dist = 20+Math.random()*130;
+        const angle = baseAngle + dist*0.03;
+        const px = cx + Math.cos(angle)*dist;
+        const py = cy + Math.sin(angle)*dist;
+        const tanSpd = 30+Math.random()*50;
+        const radSpd = 10+Math.random()*30;
+        this.ps.spawn(px, py,
+          -Math.sin(angle)*tanSpd + Math.cos(angle)*radSpd,
+          Math.cos(angle)*tanSpd + Math.sin(angle)*radSpd,
+          2+Math.random()*3, EffectEngine.galaxyColor(), 1+Math.random()*5,
+          {type:'galaxy'});
+      }
+    }
+    for (let i=0; i<2; i++) {
+      const a = Math.random()*Math.PI*2;
+      const d = 30+Math.random()*50;
+      const px = cx+Math.cos(a)*d, py = cy+Math.sin(a)*d;
+      this.ps.spawn(px, py, (cx-px)*0.02, (cy-py)*0.02,
+        0.5+Math.random(), [255,255,255], 1+Math.random()*2);
+    }
+  }
+
+  // ── 环境粒子 ──
+  effectAmbient(dt) {
+    if (Math.random()<0.3) {
+      const x = Math.random()*this.w;
+      const y = this.h+10;
+      this.ps.spawn(x, y, (Math.random()-0.5)*30, -40-Math.random()*30,
+        3+Math.random()*3,
+        [180+Math.random()*75|0, 120+Math.random()*80|0, 100+Math.random()*80|0],
+        2+Math.random()*6, {type:'ambient'});
+    }
+  }
+
+  generate(gesture, handData, dt) {
+    switch(gesture) {
+      case GestureType.OPEN_PALM: this.effectFlower(handData,dt); break;
+      case GestureType.FIST:      this.effectFire(handData,dt); break;
+      case GestureType.PEACE:     this.effectWater(handData,dt); break;
+      case GestureType.POINT:     this.effectStar(handData,dt); break;
+      case GestureType.ROCK:      this.effectHeart(handData,dt); break;
+      case GestureType.THUMBS_UP: this.effectFirework(handData,dt); break;
+      case GestureType.OK_SIGN:   this.effectGalaxy(handData,dt); break;
+      default:                    this.effectAmbient(dt); break;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  UI 更新
+// ═══════════════════════════════════════════════════════════
+let lastGesture = null;
+let gestureChangeTime = 0;
+
+function updateUI(gesture, particleCount) {
+  const meta = GESTURE_META[gesture] || GESTURE_META[GestureType.NO_HAND];
+
+  // 手势变化动画
+  if (gesture !== lastGesture) {
+    lastGesture = gesture;
+    gestureChangeTime = performance.now();
+    gestureIndicator.classList.add('bounce');
+    setTimeout(() => gestureIndicator.classList.remove('bounce'), 350);
+  }
+
+  gestureIcon.textContent = meta.icon;
+  gestureName.textContent = meta.name;
+  gestureGlow.style.background = meta.color;
+
+  // 粒子计数点
+  const dots = particleDots.children;
+  const fullDots = Math.min(10, Math.ceil(particleCount / (CONFIG.MAX_PARTICLES/10)));
+  for (let i=0; i<dots.length; i++) {
+    dots[i].classList.toggle('full', i < fullDots);
+  }
+
+  countText.textContent = particleCount;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  主程序
+// ═══════════════════════════════════════════════════════════
+let particleSystem, effectEngine, detector;
+let cachedGesture = GestureType.NO_HAND;
+let cachedHandData = null;
+let frameCount = 0;
+let fpsArr = [];
+let lastTime = performance.now();
+let prevGesture = GestureType.NO_HAND;
+let canvasW, canvasH;
+
+function resize() {
+  canvasW = window.innerWidth;
+  canvasH = window.innerHeight;
+  canvas.width = canvasW; canvas.height = canvasH;
+  if (particleSystem) particleSystem.resize(canvasW, canvasH);
+  if (effectEngine) { effectEngine.w = canvasW; effectEngine.h = canvasH; }
+}
+
+async function startCamera() {
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode, width:{ideal:1280}, height:{ideal:720} },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+  } catch(e) {
+    console.error('摄像头错误:', e);
+    loadingEl.innerHTML = `<p style="color:#ff6b6b">❌ 无法打开摄像头</p><p style="font-size:13px;margin-top:8px;opacity:0.7">请允许摄像头权限后刷新页面</p>`;
+  }
+}
+
+async function init() {
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', () => setTimeout(resize, 300));
+
+  // 初始化粒子系统
+  particleSystem = new ParticleSystem(canvasW, canvasH);
+  effectEngine = new EffectEngine(particleSystem, canvasW, canvasH);
+
+  // 加载手势检测
+  detector = new HandDetector();
+  try {
+    await detector.init();
+  } catch(e) {
+    console.error('模型加载失败:', e);
+    loadingEl.innerHTML = `<p style="color:#ff6b6b">❌ 模型加载失败</p><p style="font-size:13px;margin-top:8px;opacity:0.7">请检查网络连接后刷新</p>`;
+    return;
+  }
+
+  // 启动摄像头
+  await startCamera();
+
+  // 隐藏加载画面
+  loadingEl.classList.add('hidden');
+
+  // 默认选中自动按钮
+  gBtns[0].classList.add('active');
+
+  requestAnimationFrame(loop);
+}
+
+function loop(timestamp) {
+  const dt = Math.min((timestamp - lastTime)/1000, 0.1);
+  lastTime = timestamp;
+  frameCount++;
+
+  // FPS
+  fpsArr.push(1/dt);
+  if (fpsArr.length > 30) fpsArr.shift();
+  const fps = fpsArr.reduce((a,b)=>a+b,0) / fpsArr.length;
+
+  // ── 手势检测 ──
+  let currentGesture, handData;
+  if (manualGesture !== null) {
+    currentGesture = manualGesture;
+    if (frameCount % CONFIG.DETECT_EVERY === 0) {
+      const result = detector.detect(video);
+      if (result.handData) cachedHandData = result.handData;
+      handData = cachedHandData;
+    } else {
+      handData = cachedHandData;
+    }
+  } else if (frameCount % CONFIG.DETECT_EVERY === 0) {
+    const result = detector.detect(video);
+    currentGesture = result.gesture;
+    cachedGesture = currentGesture;
+    if (result.handData) cachedHandData = result.handData;
+    handData = cachedHandData;
+  } else {
+    currentGesture = cachedGesture;
+    handData = cachedHandData;
+  }
+
+  // ── 手动模式虚拟手部数据 ──
+  if (!handData && manualGesture !== null) {
+    handData = {
+      palmCenter: {x:canvasW/2, y:canvasH/2},
+      fingertips: {
+        thumb:{x:canvasW/2, y:canvasH/2},
+        index:{x:canvasW/2, y:canvasH/2-50},
+        middle:{x:canvasW/2, y:canvasH/2-70},
+        ring:{x:canvasW/2, y:canvasH/2-30},
+        pinky:{x:canvasW/2, y:canvasH/2-20},
+      },
+      handedness:'Right',
+    };
+  }
+
+  // ── 生成 & 更新粒子 ──
+  effectEngine.updateTime(dt);
+  if (handData) {
+    effectEngine.generate(currentGesture, handData, dt);
+  } else {
+    effectEngine.effectAmbient(dt);
+  }
+  particleSystem.update(dt);
+
+  // ── 渲染 ──
+  ctx.clearRect(0,0,canvasW,canvasH);
+  // 绘制视频（镜像）
+  if (video.readyState >= 2) {
+    ctx.save();
+    ctx.scale(-1,1);
+    ctx.drawImage(video, -canvasW, 0, canvasW, canvasH);
+    ctx.restore();
+  }
+  // 叠加粒子
+  const overlay = particleSystem.renderOverlay();
+  ctx.drawImage(overlay, 0, 0);
+
+  // ── 更新 UI ──
+  const displayGesture = manualGesture || currentGesture;
+  updateUI(displayGesture, particleSystem.count);
+  fpsText.textContent = Math.round(fps);
+
+  // ── 自动模式下更新按钮高亮 ──
+  if (manualGesture === null && currentGesture !== prevGesture) {
+    prevGesture = currentGesture;
+    const gestureToBtn = {
+      [GestureType.OPEN_PALM]:'palm', [GestureType.FIST]:'fist', [GestureType.PEACE]:'peace',
+      [GestureType.POINT]:'point', [GestureType.ROCK]:'rock', [GestureType.THUMBS_UP]:'thumbs', [GestureType.OK_SIGN]:'ok',
+    };
+    const btnKey = gestureToBtn[currentGesture];
+    gBtns.forEach(b => {
+      b.classList.remove('active');
+      if (b.dataset.gesture === btnKey) b.classList.add('active');
+    });
+    if (!btnKey) gBtns[0].classList.add('active'); // auto
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ── 处理页面可见性变化（切后台暂停，回来恢复）──
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    lastTime = performance.now();
+    fpsArr = [];
+  }
+});
+
+// ── 启动 ──
+init().catch(err => {
+  console.error('初始化失败:', err);
+  loadingEl.innerHTML = `<p style="color:#ff6b6b">❌ 启动失败</p><p style="font-size:13px;margin-top:8px;opacity:0.7">${err.message}</p>`;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+*.exe
+*.zip
+*.tgz
+*.pkg
+*.toc
+# Build artifacts
+*.pyc
+*.pyo
+*.spec
+*.exe
+*.zip
+*.tgz
+*.pkg
+*.toc
+.vscode/
+.idea/
